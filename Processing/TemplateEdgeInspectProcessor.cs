@@ -156,9 +156,10 @@ namespace EdgeAlignInspect
 				GenRectangle2(job.TemplateRoi, out rect);
 				HOperatorSet.ReduceDomain(hImage, rect, out imageReduced);
 				HOperatorSet.CreateShapeModel(imageReduced, job.Match.NumLevels, job.Match.AngleStart, job.Match.AngleExtent, "auto", "auto", "use_polarity", 20, 10, out modelID);
-				templateTeachData.RefRow = job.TemplateRoi.Center.Y;
-				templateTeachData.RefCol = job.TemplateRoi.Center.X;
-				templateTeachData.RefAngle = 0.0;
+				ResolveReferenceMatchPose(hImage, modelID, job, out var refRow, out var refCol, out var refAngle);
+				templateTeachData.RefRow = refRow;
+				templateTeachData.RefCol = refCol;
+				templateTeachData.RefAngle = refAngle;
 				templateTeachData.HasTemplate = true;
 				templateTeachData.ModelBytes = ExportShapeModelToBytes(modelID);
 				templateTeachData.EraseStrokes = CloneEraseStrokes(job.TeachData?.EraseStrokes);
@@ -253,22 +254,26 @@ namespace EdgeAlignInspect
 			{
 				throw new InvalidOperationException("外轮廓特征点不足，无法创建模板模型。请调整模板ROI、边缘阈值，或减少擦除范围。");
 			}
+			HImage hImage = null;
+			GCHandle grayHandle = default(GCHandle);
 			HObject contour = null;
 			HTuple modelID = null;
 			try
 			{
+				hImage = BitmapToGrayHImage(refBmp, out var _, out var _, out var _, out grayHandle);
 				GenContourFromPoints(points, out contour);
 				HOperatorSet.CreateShapeModelXld(contour, job.Match.NumLevels, job.Match.AngleStart, job.Match.AngleExtent, "auto", "auto", "ignore_local_polarity", 20, out modelID);
 				SetXldModelOriginToTemplateRoiCenter(modelID, points, job.TemplateRoi);
+				ResolveReferenceMatchPose(hImage, modelID, job, out var refRow, out var refCol, out var refAngle);
 				TemplateTeachData teachData = new TemplateTeachData
 				{
 					HasTemplate = true,
 					ModelBytes = ExportShapeModelToBytes(modelID),
 					FeaturePoints = points,
 					EraseStrokes = CloneEraseStrokes(job.TeachData?.EraseStrokes),
-					RefRow = job.TemplateRoi.Center.Y,
-					RefCol = job.TemplateRoi.Center.X,
-					RefAngle = 0.0
+					RefRow = refRow,
+					RefCol = refCol,
+					RefAngle = refAngle
 				};
 				return teachData;
 			}
@@ -285,6 +290,11 @@ namespace EdgeAlignInspect
 					}
 				}
 				contour?.Dispose();
+				hImage?.Dispose();
+				if (grayHandle.IsAllocated)
+				{
+					grayHandle.Free();
+				}
 			}
 		}
 
@@ -1210,6 +1220,35 @@ namespace EdgeAlignInspect
 			}
 		}
 
+		private static void ResolveReferenceMatchPose(HObject image, HTuple modelID, EdgeInspectJob job, out double refRow, out double refCol, out double refAngle)
+		{
+			FindTemplateMatch(image, modelID, job, out var row, out var column, out var angle, out var score);
+			if (score == null || score.Length < 1)
+			{
+				throw new InvalidOperationException("模板模型无法在示教图中回匹配，请检查模板ROI、搜索区域和匹配参数。");
+			}
+			refRow = row[0].D;
+			refCol = column[0].D;
+			refAngle = angle[0].D;
+		}
+
+		private static void BuildReferenceToMatchTransform(EdgeInspectJob job, HTuple row, HTuple column, HTuple angle, out HTuple homMat2D)
+		{
+			double refRow = job.TeachData.RefRow;
+			double refCol = job.TeachData.RefCol;
+			double refAngle = job.TeachData.RefAngle;
+			if (double.IsNaN(refRow) || double.IsInfinity(refRow) || double.IsNaN(refCol) || double.IsInfinity(refCol))
+			{
+				refRow = job.TemplateRoi.Center.Y;
+				refCol = job.TemplateRoi.Center.X;
+			}
+			if (double.IsNaN(refAngle) || double.IsInfinity(refAngle))
+			{
+				refAngle = 0.0;
+			}
+			HOperatorSet.VectorAngleToRigid(refRow, refCol, refAngle, row[0], column[0], angle[0], out homMat2D);
+		}
+
 		private static bool IsUsableSearchRoi(RotRectF roi)
 		{
 			return !roi.IsEmpty && !float.IsNaN(roi.Cx) && !float.IsNaN(roi.Cy) && !float.IsNaN(roi.Phi) && !float.IsNaN(roi.HalfLen1) && !float.IsNaN(roi.HalfLen2) && !float.IsInfinity(roi.Cx) && !float.IsInfinity(roi.Cy) && !float.IsInfinity(roi.Phi) && !float.IsInfinity(roi.HalfLen1) && !float.IsInfinity(roi.HalfLen2);
@@ -1248,7 +1287,7 @@ namespace EdgeAlignInspect
 						Message = LocalizedText.Message("未找到匹配目标。", job.Language)
 					};
 				}
-				HOperatorSet.VectorAngleToRigid(job.TeachData.RefRow, job.TeachData.RefCol, 0.0, row[0], column[0], angle[0], out var homMat2D);
+				BuildReferenceToMatchTransform(job, row, column, angle, out var homMat2D);
 				return new TemplateMatchQuickTestResult
 				{
 					Found = true,
@@ -1354,7 +1393,7 @@ namespace EdgeAlignInspect
 					edgeInspectResult.TemplateMatchCol = column[0].D;
 					edgeInspectResult.TemplateMatchAngle = angle[0].D;
 					edgeInspectResult.TemplateMatchCenter = new PointF((float)column[0].D, (float)row[0].D);
-					HOperatorSet.VectorAngleToRigid(job.TeachData.RefRow, job.TeachData.RefCol, 0.0, row[0], column[0], angle[0], out homMat2D);
+					BuildReferenceToMatchTransform(job, row, column, angle, out homMat2D);
 					flag2 = true;
 					edgeInspectResult.TemplateRoiCur = TransformRotRect(job.TemplateRoi, homMat2D);
 					// Search ROI remains fixed in image coordinates after a successful match.
@@ -1370,7 +1409,7 @@ namespace EdgeAlignInspect
 					{
 						Name = $"基准{i + 1}"
 					};
-					RotRectF rotRectF = (flag2 && baseRoiItem.UseTemplateTransform ? TransformRotRect(baseRoiItem.Roi, homMat2D) : baseRoiItem.Roi);
+					RotRectF rotRectF = (flag2 ? TransformRotRect(baseRoiItem.Roi, homMat2D) : baseRoiItem.Roi);
 					CaliperParameters caliperParameters = (baseRoiItem.Caliper ?? job.ResolveBaseCaliper(i) ?? EdgeInspectJob.CreateDefaultBaseCaliper()).DeepClone();
 					BaseRoiInspectResult baseRoiInspectResult = new BaseRoiInspectResult
 					{
@@ -1402,8 +1441,8 @@ namespace EdgeAlignInspect
 					{
 						Name = $"圆基准{j + 1}"
 					};
-					CircleRoiF circleRoiF = (flag2 && circleBaseRoiItem.UseTemplateTransform ? TransformCircleRoi(circleBaseRoiItem.Circle1, homMat2D) : circleBaseRoiItem.Circle1);
-					CircleRoiF circleRoiF2 = (flag2 && circleBaseRoiItem.UseTemplateTransform ? TransformCircleRoi(circleBaseRoiItem.Circle2, homMat2D) : circleBaseRoiItem.Circle2);
+					CircleRoiF circleRoiF = (flag2 ? TransformCircleRoi(circleBaseRoiItem.Circle1, homMat2D) : circleBaseRoiItem.Circle1);
+					CircleRoiF circleRoiF2 = (flag2 ? TransformCircleRoi(circleBaseRoiItem.Circle2, homMat2D) : circleBaseRoiItem.Circle2);
 					CaliperParameters caliperParameters2 = (circleBaseRoiItem.Caliper ?? job.CircleCaliper ?? EdgeInspectJob.CreateDefaultCircleCaliper()).DeepClone();
 					CircleBaseRoiInspectResult circleBaseRoiInspectResult = new CircleBaseRoiInspectResult
 					{
@@ -1446,7 +1485,7 @@ namespace EdgeAlignInspect
 					{
 						Name = $"圆点基准{k + 1}"
 					};
-					CircleRoiF circleRoiF3 = (flag2 && circlePointRoiItem.UseTemplateTransform ? TransformCircleRoi(circlePointRoiItem.Circle, homMat2D) : circlePointRoiItem.Circle);
+					CircleRoiF circleRoiF3 = (flag2 ? TransformCircleRoi(circlePointRoiItem.Circle, homMat2D) : circlePointRoiItem.Circle);
 					CaliperParameters caliperParameters3 = (circlePointRoiItem.Caliper ?? job.CircleCaliper ?? EdgeInspectJob.CreateDefaultCircleCaliper()).DeepClone();
 					CirclePointRoiInspectResult circlePointRoiInspectResult = new CirclePointRoiInspectResult
 					{
@@ -1491,7 +1530,7 @@ namespace EdgeAlignInspect
 						continue;
 					}
 					num++;
-					RotRectF rotRectF2 = (flag2 && detectRoiItem.UseTemplateTransform ? TransformRotRect(detectRoiItem.Roi, homMat2D) : detectRoiItem.Roi);
+					RotRectF rotRectF2 = (flag2 ? TransformRotRect(detectRoiItem.Roi, homMat2D) : detectRoiItem.Roi);
 					CaliperParameters caliperParameters4 = (detectRoiItem.Caliper ?? job.ResolveDetectCaliper(l) ?? EdgeInspectJob.CreateDefaultDetectCaliper()).DeepClone();
 					int num2 = job.ResolveBaseRoiIndex(detectRoiItem.BaseRoiId, detectRoiItem.BaseRoiIndex);
 					int num3 = job.ResolveCircleBaseRoiIndex(detectRoiItem.CircleBaseRoiId, detectRoiItem.CircleBaseRoiIndex);

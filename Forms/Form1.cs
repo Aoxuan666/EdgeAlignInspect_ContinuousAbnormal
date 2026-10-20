@@ -584,7 +584,6 @@ namespace EdgeAlignInspect
 					else
 					{
 						PullCanvasRoisToJob();
-						MarkSelectedRoiAsManual();
 					}
 					NormalizeDetectBaseBindings();
 					RefreshBaseBindingCombo();
@@ -1294,6 +1293,7 @@ namespace EdgeAlignInspect
 			for (int i = 0; i < canvas.BaseRois.Count; i++)
 			{
 				_job.BaseRois[i].Roi = _editTransform.ToReference(canvas.BaseRois[i]);
+				_job.BaseRois[i].UseTemplateTransform = true;
 				if (string.IsNullOrWhiteSpace(_job.BaseRois[i].Name))
 				{
 					_job.BaseRois[i].Name = $"基准{i + 1}";
@@ -1320,6 +1320,7 @@ namespace EdgeAlignInspect
 			{
 				_job.CircleBaseRois[j].Circle1 = _editTransform.ToReference(canvas.CircleBaseRois[j].Circle1);
 				_job.CircleBaseRois[j].Circle2 = _editTransform.ToReference(canvas.CircleBaseRois[j].Circle2);
+				_job.CircleBaseRois[j].UseTemplateTransform = true;
 				if (string.IsNullOrWhiteSpace(_job.CircleBaseRois[j].Name))
 				{
 					_job.CircleBaseRois[j].Name = $"圆基准{j + 1}";
@@ -1345,6 +1346,7 @@ namespace EdgeAlignInspect
 			for (int k = 0; k < canvas.CirclePointRois.Count; k++)
 			{
 				_job.CirclePointRois[k].Circle = _editTransform.ToReference(canvas.CirclePointRois[k]);
+				_job.CirclePointRois[k].UseTemplateTransform = true;
 				if (string.IsNullOrWhiteSpace(_job.CirclePointRois[k].Name))
 				{
 					_job.CirclePointRois[k].Name = $"圆点基准{k + 1}";
@@ -1372,6 +1374,7 @@ namespace EdgeAlignInspect
 			for (int l = 0; l < canvas.DetectRois.Count; l++)
 			{
 				_job.DetectItems[l].Roi = _editTransform.ToReference(canvas.DetectRois[l]);
+				_job.DetectItems[l].UseTemplateTransform = true;
 				if (string.IsNullOrWhiteSpace(_job.DetectItems[l].Name))
 				{
 					_job.DetectItems[l].Name = $"检测{l + 1}";
@@ -1383,44 +1386,6 @@ namespace EdgeAlignInspect
 				_job.NormalizeDetectBinding(_job.DetectItems[l]);
 			}
 			_job.Normalize();
-		}
-
-		private void MarkSelectedRoiAsManual()
-		{
-			CanvasRoiSelection selectedRoi = canvas.SelectedRoi;
-			if (!selectedRoi.IsValid)
-			{
-				return;
-			}
-			int index = selectedRoi.Index;
-			switch (selectedRoi.Kind)
-			{
-			case CanvasRoiKind.Base:
-				if (index >= 0 && index < _job.BaseRois.Count)
-				{
-					_job.BaseRois[index].UseTemplateTransform = false;
-				}
-				break;
-			case CanvasRoiKind.CircleBase1:
-			case CanvasRoiKind.CircleBase2:
-				if (index >= 0 && index < _job.CircleBaseRois.Count)
-				{
-					_job.CircleBaseRois[index].UseTemplateTransform = false;
-				}
-				break;
-			case CanvasRoiKind.CirclePoint:
-				if (index >= 0 && index < _job.CirclePointRois.Count)
-				{
-					_job.CirclePointRois[index].UseTemplateTransform = false;
-				}
-				break;
-			case CanvasRoiKind.Detect:
-				if (index >= 0 && index < _job.DetectItems.Count)
-				{
-					_job.DetectItems[index].UseTemplateTransform = false;
-				}
-				break;
-			}
 		}
 
 		private void NormalizeDetectBaseBindings()
@@ -1514,7 +1479,26 @@ namespace EdgeAlignInspect
 
 		private static void NormalizeTemplateTransformFlags(EdgeInspectJob job)
 		{
-			// Preserve each ROI's saved transform preference. New ROI objects default to true.
+			if (job == null)
+			{
+				return;
+			}
+			foreach (BaseRoiItem item in job.BaseRois.Where((BaseRoiItem x) => x != null))
+			{
+				item.UseTemplateTransform = true;
+			}
+			foreach (CircleBaseRoiItem item2 in job.CircleBaseRois.Where((CircleBaseRoiItem x) => x != null))
+			{
+				item2.UseTemplateTransform = true;
+			}
+			foreach (CirclePointRoiItem item3 in job.CirclePointRois.Where((CirclePointRoiItem x) => x != null))
+			{
+				item3.UseTemplateTransform = true;
+			}
+			foreach (DetectRoiItem item4 in job.DetectItems.Where((DetectRoiItem x) => x != null))
+			{
+				item4.UseTemplateTransform = true;
+			}
 		}
 
 		private void ResolveEditTransformForCurrentImage()
@@ -1534,7 +1518,7 @@ namespace EdgeAlignInspect
 							RefY = _job.TeachData.RefRow,
 							ImageX = result.Col,
 							ImageY = result.Row,
-							Angle = result.Angle
+							Angle = RotRectF.NormalizeAngle((float)(_job.TeachData.RefAngle - result.Angle))
 						};
 					}
 					else
